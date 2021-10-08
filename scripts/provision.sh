@@ -1,15 +1,25 @@
 #!/usr/bin/env bash
 set -euxo posix
 
+sleep 30
+
+# disable resolvconf add default vultr nameserver to resolv.conf
+# to eliminate coredns loop issues
+systemctl disable --now resolvconf.service rdnssd.service
+rm /etc/resolv.conf
+echo "nameserver 108.61.10.10" > /etc/resolv.conf
+
 safe_apt(){
 	while fuser /var/{lib/{dpkg,apt/lists},cache/apt/archives}/lock >/dev/null 2>&1 ; do
 		echo "Waiting for apt lock..."
-		sleep 1
+		sleep 5
 	done
-	apt "$@"
+	apt-get "$@"
 }
 
 safe_apt -y update
+safe_apt -y upgrade
+safe_apt -y dist-upgrade
 safe_apt -y install jq
 
 PUBLIC_MAC=$(curl --silent 169.254.169.254/v1.json | jq -r '.interfaces[0].mac')
@@ -19,10 +29,14 @@ INTERNAL_NIC=$(ip -j link | jq --arg INTERNAL_MAC $INTERNAL_MAC '.[] | select(.a
 INTERNAL_IP=$1
 CONTROL_PLANE_PORTS=(6443 2379 2380 10250 10251 10252 8132 8133 9443)
 
-if [ $(echo $HOSTNAME | grep controller) ]; then
-    NODE_ROLE=controller
-elif [ $(echo $HOSTNAME | grep worker) ]; then
-    NODE_ROLE=worker
+if [ "$NODE_ROLE" = "controller" ] || [ "$NODE_ROLE" = "worker" ]; then
+    echo "Configuring host $(hostname) as role: $NODE_ROLE"
+    sleep 5
+else
+    echo "Environment variable NODE_ROLE not set or not equal controller|worker (current value = $NODE_ROLE)"
+    echo "aborting..."
+    sleep 90
+    exit 1
 fi
 
 case $NODE_ROLE in

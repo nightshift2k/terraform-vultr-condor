@@ -11,18 +11,15 @@
 * [Extensions](#extensions)
   * [Helm](#helm)
   * [Manifest Bundles](#manifest-bundles)
-* [Limitagions](#limitagions)
+* [Limitations](#limitations)
 
 ## Requirements
   * A funded Vultr account and API Key, should be configured as an environment variable to be consumed by the Terraform provider:
   ```sh
   export VULTR_API_KEY="<api-key-here>"
   ```
+  Alternatively define `deployment_vultr_api_key` in your project.
   * The [k0sctl](https://github.com/k0sproject/k0sctl) executable must be installed and in your executable path.
-  * A configured ssh-agent, i.e.:
-  ```sh
-  ssh-add ~/.ssh/id_rsa
-  ```
 
 ## Cloud Addons
   * Installs the [Vultr CCM](https://github.com/vultr/vultr-cloud-controller-manager)
@@ -38,7 +35,6 @@ Usage and input details can be found in the [Terraform Module Registry Docs](htt
 module "condor" {
   source                 = "vultr/condor/vultr"
   version                = "2.0.0"
-  provisioner_public_key = chomp(file("~/.ssh/id_rsa.pub"))
   cluster_vultr_api_key  = var.cluster_vultr_api_key
   control_plane_firewall_rules = [
     {
@@ -72,7 +68,7 @@ kubectl --kubeconfig admin.conf get po -n kube-system
 
 ## Firewall Configuration
 ### Control Plane HA VLB Firewall
-The Control Plane LB Firewall is configured to allow only what is needed by the cluster as described in the [K0s Networking Docs](https://docs.k0sproject.io/v1.21.1+k0s.0/networking/#required-ports-and-protocols) by default. The Kubernetes API will not be accessible without configuring an additional rule or rules(as shown in the quickstart example) via the `control_plane_firewall_rules` input variable. E.g.:
+The Control Plane LB Firewall is configured to allow only what is needed by the cluster as described in the [K0s Networking Docs](https://docs.k0sproject.io/v1.22.2+k0s.1/networking/#required-ports-and-protocols) by default. The Kubernetes API will not be accessible without configuring an additional rule or rules(as shown in the quickstart example) via the `control_plane_firewall_rules` input variable. E.g.:
 ``` hcl
   control_plane_firewall_rules = [
     {
@@ -106,10 +102,10 @@ Helm Repositories and Charts may be configured/deployed during initial cluster i
     }
   ]
 ```
-Please see the [Helm Chart Deployer](https://docs.k0sproject.io/v1.21.3+k0s.0/helm-charts/#helm-charts) docs for a comprehensive list of field/parameter values and further details. Note, this feature entails [Limitagions](#limitagions).
+Please see the [Helm Chart Deployer](https://docs.k0sproject.io/v1.22.2+k0s.1/helm-charts/) docs for a comprehensive list of field/parameter values and further details. Note, this feature entails [Limitations](#limitations).
 
 ### Manifest Bundles
-You may deploy any Kubernetes manifests automatically with the [K0s Manifest Deployer](https://docs.k0sproject.io/v1.21.1+k0s.0/manifests/#manifest-deployer) by placing your manifests in the `/var/lib/k0s/manifests` directory. Doing so via this module is not supported, however you may use the resulting `controller_ips` module output as arguments to a separate module that copies your manifests to the specified directory(or as stated in the linked K0s docs, a "stack" subdirectory).
+You may deploy any Kubernetes manifests automatically with the [K0s Manifest Deployer](hhttps://docs.k0sproject.io/v1.22.2+k0s.1/manifests/#manifest-deployer) by placing your manifests in the `/var/lib/k0s/manifests` directory. Doing so via this module is not supported, however you may use the resulting `controller_ips` module output as arguments to a separate module that copies your manifests to the specified directory(or as stated in the linked K0s docs, a "stack" subdirectory).
 
 ## Limitations
 * Shrinking of the Control Plane is not supported, only growing. You will need to manually run `k0s etcd leave` on all Control Plane nodes with index > 0 prior to shrinking the `controller_count`. An initial attempt was made to implement this in a destroy time provisioner, however it caused issues when running `terraform destroy` to destroy the entire plan. This may be revisited at a later date. 

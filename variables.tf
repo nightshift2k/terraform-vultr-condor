@@ -1,12 +1,42 @@
+variable "deployment_vultr_api_key" {
+  description = "Vultr API Key for the Terraform deployment"
+  type        = string
+  sensitive   = true
+}
+
 variable "cluster_name" {
   description = "A name for your cluster."
   type        = string
   default     = "default"
 }
 
-variable "provisioner_public_key" {
-  description = "SSH Public Key for Terraform provisioner access."
+variable "cluster_append_random_id" {
+  description = "Wether to append a random id to the cluster name"
+  type        = bool
+  default     = true
+}
+
+variable "cluster_random_id_length" {
+  description = "Length of the random id (it will double due to hex conversion, so 2 = 4, 3 = 6, etc.)"
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = var.cluster_random_id_length > 0 && var.cluster_random_id_length <= 8
+    error_message = "The cluster_random_id_length value must be between 1 and 8!"
+  }  
+}
+
+variable "cluster_create_external_dns_hosts" {
+  description = "Wether to create DNS hosts for the cluster"
+  type        = bool
+  default     = false
+}
+
+variable "cluster_external_dns_domain" {
+  description = "The DNS domain for the cluster, must be hosted in Vultr"
   type        = string
+  default     = ""
 }
 
 variable "extra_public_keys" {
@@ -114,32 +144,61 @@ variable "pod_sec_policy" {
 variable "konnectivity_version" {
   description = "K0s Configuration Konnectivity Version."
   type        = string
-  default     = "v0.0.16"
+  default     = "v0.0.24"
 }
 
 variable "metrics_server_version" {
   description = "K0s Configuration Kube Metrics Version."
   type        = string
-  default     = "v0.3.7"
+  default     = "v0.5.1"
 }
+
 
 variable "kube_proxy_version" {
   description = "K0s Configuration Kube Proxy version."
   type        = string
-  default     = "v1.21.3"
+  default     = "v1.22.2"
 }
 
 variable "core_dns_version" {
   description = "K0s Configuration CoreDNS version."
   type        = string
-  default     = "1.7.0"
+  default     = "1.8.0"
 }
 
-variable "calico_version" {
-  description = "K0s Configuration Calico version."
+variable "calico_cni_version" {
+  description = "K0s Configuration Calico CNI version."
   type        = string
   default     = "v3.18.1"
 }
+
+variable "calico_node_version" {
+  description = "K0s Configuration Calico Node version."
+  type        = string
+  default     = "v3.18.1"
+}
+
+variable "calico_kubecontrollers_version" {
+  description = "K0s Configuration Calico Node version."
+  type        = string
+  default     = "v3.18.1"
+}
+
+variable "csi_provisioner_version" {
+  type    = string
+  default = "v3.0.0"
+}
+
+variable "csi_attacher_version" {
+  type    = string
+  default = "v3.3.0"
+}
+
+variable "csi_node_driver_registrar_version" {
+  type    = string
+  default = "v2.3.0"
+}
+
 
 variable "cluster_os" {
   description = "Cluster node OS."
@@ -162,7 +221,13 @@ variable "controller_plan" {
 variable "k0s_version" {
   description = "K0s Configuration K0s version."
   type        = string
-  default     = "v1.21.3+k0s.0"
+  default     = "v1.22.2+k0s.1"
+}
+
+variable "k0s_disable_components" {
+  description = "components that should be disabled in the control plane"
+  type        =  list(string)
+  default     = []
 }
 
 variable "write_kubeconfig" {
@@ -175,18 +240,29 @@ variable "cluster_vultr_api_key" {
   description = "Vultr API Key for CCM and CSI."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "vultr_ccm_version" {
   description = "Vultr Cloud Controller Manager version."
   type        = string
-  default     = "v0.2.0"
+  default     = "v0.3.0"
 }
 
 variable "vultr_csi_version" {
   description = "Vultr Cloud Storage Interface version."
   type        = string
-  default     = "v0.1.1"
+  default     = "v0.3.0"
+}
+
+variable "enable_vultr_ccm" {
+  type        = bool
+  default     = true
+}
+
+variable "enable_vultr_csi" {
+  type        = bool
+  default     = true
 }
 
 variable "control_plane_firewall_rules" {
@@ -205,21 +281,25 @@ variable "allow_ssh" {
 }
 
 variable "helm_repositories" {
+  description = "Helm repositories to add to the k0s deployment"
   type    = list(map(any))
   default = []
 }
 
 variable "helm_charts" {
+  description = "Helm charts to add to the k0s deployment"
   type    = list(map(any))
   default = []
 }
 
 variable "vultr_csi_image" {
+  description = "Vultr CSI image name"
   type    = string
   default = "vultr/vultr-csi"
 }
 
 variable "calico_mode" {
+  description = "Calico mode"
   type    = string
   default = "bird"
 }

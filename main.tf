@@ -2,29 +2,38 @@ terraform {
   required_providers {
     vultr = {
       source  = "vultr/vultr"
-      version = "2.3.2"
+      version = ">=2.4.2"
     }
   }
 }
 
+provider "vultr" {
+  api_key = var.deployment_vultr_api_key
+}
+
 locals {
-  cluster_name                      = "${var.cluster_name}-${random_id.cluster.hex}"
-  public_keys                       = concat([vultr_ssh_key.provisioner.id], vultr_ssh_key.extra_public_keys.*.id)
-  csi_provisioner_version           = "v2.0.4"
-  csi_attacher_version              = "v3.0.2"
-  csi_node_driver_registrar_version = "v2.0.1"
+  enable_vultr_extensions           = (var.enable_vultr_ccm || var.enable_vultr_csi) && length(var.cluster_vultr_api_key) > 0
+  cluster_name                      = var.cluster_append_random_id == true  ? "${var.cluster_name}-${random_id.cluster.hex}" : var.cluster_name
+  
+  public_keys                       = concat([vultr_ssh_key.instance.id], vultr_ssh_key.extra_public_keys.*.id)
+
+  k0sctl_install_flags_enable_ccm   = tostring(var.enable_vultr_ccm && (length(var.cluster_vultr_api_key) > 0))
+  k0sctl_install_flags_disable_comp = length(var.k0s_disable_components) > 0 ? join(", ", var.k0s_disable_components) : false 
+
   k0sctl_controllers = [
     for host in vultr_instance.control_plane :
     {
       role = "controller"
       installFlags = [
-        "--enable-cloud-provider=true"
+        "--enable-cloud-provider=${local.k0sctl_install_flags_enable_ccm}",
+        length(var.k0s_disable_components) > 0 ? "--disable-components ${local.k0sctl_install_flags_disable_comp}" : ""
       ]
       privateAddress = host.internal_ip
       ssh = {
         address = host.main_ip
         user    = "root"
         port    = 22
+        keyPath = local_file.private_key_root.filename
       }
     }
   ]
@@ -33,23 +42,27 @@ locals {
     {
       role = "worker"
       installFlags = [
-        "--enable-cloud-provider=true"
+        "--enable-cloud-provider=${local.k0sctl_install_flags_enable_ccm}"
       ]
       privateAddress = host.internal_ip
       ssh = {
         address = host.main_ip
         user    = "root"
         port    = 22
+        keyPath = local_file.private_key_root.filename
       }
     }
   ]
+
+  k0s_api_sans = (var.cluster_create_external_dns_hosts && length(var.cluster_external_dns_domain) > 0) ? concat([ vultr_load_balancer.control_plane_ha.ipv4 ], [ format("%s.%s", vultr_dns_record.control_plane_ha_dns_record[0].name, vultr_dns_record.control_plane_ha_dns_record[0].domain) ]) : [ vultr_load_balancer.control_plane_ha.ipv4 ]
+
   k0sctl_conf = {
     apiVersion = "k0sctl.k0sproject.io/v1beta1"
     kind       = "Cluster"
     metadata = {
       name = local.cluster_name
     }
-    spec = {
+    spec = {      
       hosts = concat(local.k0sctl_controllers, local.k0sctl_workers)
       k0s = {
         version = var.k0s_version
@@ -74,9 +87,8 @@ locals {
               k0sApiPort      = 9443
               externalAddress = vultr_load_balancer.control_plane_ha.ipv4
               address         = vultr_load_balancer.control_plane_ha.ipv4
-              sans = [
-                vultr_load_balancer.control_plane_ha.ipv4
-              ]
+              # sans = [ vultr_load_balancer.control_plane_ha.ipv4 ]
+              sans = local.k0s_api_sans
             }
             network = {
               podCIDR     = var.pod_cidr
@@ -109,7 +121,15 @@ locals {
               calico = {
                 cni = {
                   image   = "calico/cni"
-                  version = var.calico_version
+                  version = var.calico_cni_version
+                }
+                node = {
+                  image   = "calico/node"
+                  version = var.calico_node_version
+                }
+                kubecontrollers = {
+                  image   = "calico/kube-controllers"
+                  version = var.calico_kubecontrollers_version
                 }
               }
             }
@@ -118,6 +138,7 @@ locals {
       }
     }
   }
+
   config_sha256sum = sha256(tostring(jsonencode(local.k0sctl_conf)))
 }
 
@@ -129,12 +150,29 @@ data "vultr_os" "cluster" {
 }
 
 resource "random_id" "cluster" {
-  byte_length = 8
+  byte_length = var.cluster_random_id_length
 }
 
-resource "vultr_ssh_key" "provisioner" {
-  name    = "Provisioner public key for k0s cluster ${random_id.cluster.hex}"
-  ssh_key = var.provisioner_public_key
+resource "tls_private_key" "root_tls_key" {
+  algorithm   = "RSA"
+  rsa_bits = 2048
+}
+
+resource "vultr_ssh_key" "instance" {
+  name                  = "Provisioner public key for k0s cluster ${local.cluster_name}"
+  ssh_key               = tls_private_key.root_tls_key.public_key_openssh
+}
+
+resource "local_file" "private_key_root" {
+  content         = tls_private_key.root_tls_key.private_key_pem
+  filename        = "${abspath(path.root)}/.ssh/${local.cluster_name}_${lower(tls_private_key.root_tls_key.algorithm)}"
+  file_permission = "0600"
+}
+
+resource "local_file" "public_key_root" {
+  content         = tls_private_key.root_tls_key.public_key_pem
+  filename        = "${abspath(path.root)}/.ssh/${local.cluster_name}_${lower(tls_private_key.root_tls_key.algorithm)}.pub"
+  file_permission = "0600"
 }
 
 resource "vultr_ssh_key" "extra_public_keys" {
@@ -273,10 +311,13 @@ resource "vultr_firewall_rule" "etcd" {
 }
 
 resource "vultr_instance" "control_plane" {
+  depends_on = [
+    vultr_private_network.cluster
+  ]
   count               = var.controller_count
   plan                = var.controller_plan
-  hostname            = "${local.cluster_name}-controller-${count.index}"
-  label               = "${local.cluster_name}-controller-${count.index}"
+  hostname            = "${local.cluster_name}-ctr-${format("%02d", count.index + 1)}"
+  label               = "${local.cluster_name}-ctr-${format("%02d", count.index + 1)}"
   region              = var.region
   os_id               = data.vultr_os.cluster.id
   firewall_group_id   = vultr_firewall_group.cluster.id
@@ -289,8 +330,10 @@ resource "vultr_instance" "control_plane" {
 
   connection {
     type = "ssh"
+    timeout = "10m"
     user = "root"
     host = self.main_ip
+    private_key = tls_private_key.root_tls_key.private_key_pem
   }
 
   provisioner "file" {
@@ -301,6 +344,7 @@ resource "vultr_instance" "control_plane" {
   provisioner "remote-exec" {
     inline = [
       "chmod +x /tmp/provision.sh",
+      "export NODE_ROLE=controller",
       "/tmp/provision.sh ${self.internal_ip}",
       "rm -f /tmp/provision.sh"
     ]
@@ -308,10 +352,13 @@ resource "vultr_instance" "control_plane" {
 }
 
 resource "vultr_instance" "worker" {
+  depends_on = [
+    vultr_private_network.cluster
+  ]
   count               = var.worker_count
   plan                = var.worker_plan
-  hostname            = "${local.cluster_name}-worker-${count.index}"
-  label               = "${local.cluster_name}-worker-${count.index}"
+  hostname            = "${local.cluster_name}-wrk-${format("%02d", count.index + 1)}"
+  label               = "${local.cluster_name}-wrk-${format("%02d", count.index + 1)}"
   region              = var.region
   os_id               = data.vultr_os.cluster.id
   firewall_group_id   = vultr_firewall_group.cluster.id
@@ -324,7 +371,9 @@ resource "vultr_instance" "worker" {
 
   connection {
     type = "ssh"
+    timeout = "10m"
     user = "root"
+    private_key = tls_private_key.root_tls_key.private_key_pem
     host = self.main_ip
   }
 
@@ -336,17 +385,53 @@ resource "vultr_instance" "worker" {
   provisioner "remote-exec" {
     inline = [
       "chmod +x /tmp/provision.sh",
+      "export NODE_ROLE=worker",
       "/tmp/provision.sh ${self.internal_ip}",
       "rm -f /tmp/provision.sh"
     ]
   }
 }
 
+resource "vultr_dns_record" "control_plane_dns_records" {
+    count             = (var.cluster_create_external_dns_hosts && length(var.cluster_external_dns_domain) > 0 && length(vultr_instance.control_plane) > 0) ? length(vultr_instance.control_plane) : 0
+    domain            = var.cluster_external_dns_domain
+    name              = vultr_instance.control_plane[count.index].hostname
+    type              = "A"
+    data              = vultr_instance.control_plane[count.index].main_ip
+    ttl               = 120 # don't go below 120, not accepted!
+}
+
+resource "vultr_dns_record" "worker_dns_records" {
+    count             = (var.cluster_create_external_dns_hosts && length(var.cluster_external_dns_domain) > 0 && length(vultr_instance.worker) > 0) ? length(vultr_instance.worker) : 0
+    domain            = var.cluster_external_dns_domain
+    name              = vultr_instance.worker[count.index].hostname
+    type              = "A"
+    data              = vultr_instance.worker[count.index].main_ip
+    ttl               = 120
+}
+
+resource "vultr_dns_record" "control_plane_ha_dns_record" {
+    count             = (var.cluster_create_external_dns_hosts && length(var.cluster_external_dns_domain) > 0) ? 1 : 0
+    domain            = var.cluster_external_dns_domain
+    name              = local.cluster_name
+    type              = "A"
+    data              = vultr_load_balancer.control_plane_ha.ipv4
+    ttl               = 120
+}
+
+
+resource "local_file" "k0sctl_conf" {
+  content         = yamlencode(local.k0sctl_conf)
+  filename        = "${abspath(path.root)}/k0sctl.yaml"
+  file_permission = "0600"
+}
+
 resource "null_resource" "k0s" {
   depends_on = [
     vultr_load_balancer.control_plane_ha,
     vultr_instance.control_plane,
-    vultr_instance.worker
+    vultr_instance.worker,
+    local_file.k0sctl_conf
   ]
 
   triggers = {
@@ -356,18 +441,11 @@ resource "null_resource" "k0s" {
   }
 
   provisioner "local-exec" {
-    command = <<-EOT
-      cat <<-EOF > k0sctl.yaml
-      ${yamlencode(local.k0sctl_conf)}
-      EOF
-      k0sctl apply
-
-EOT
+    command ="k0sctl apply --disable-telemetry"
   }
 }
-
 resource "null_resource" "vultr_extensions" {
-  count = var.controller_count
+  count = local.enable_vultr_extensions == true ? var.controller_count : 0  
 
   triggers = {
     api_key     = var.cluster_vultr_api_key
@@ -377,14 +455,40 @@ resource "null_resource" "vultr_extensions" {
 
   connection {
     type = "ssh"
+    timeout = "10m"
     user = "root"
     host = vultr_instance.control_plane[count.index].main_ip
+    private_key = tls_private_key.root_tls_key.private_key_pem
+
   }
 
   provisioner "remote-exec" {
     inline = [
       "mkdir -p /var/lib/k0s/manifests/vultr"
     ]
+  }
+
+}
+
+resource "null_resource" "vultr_ccm_extension" {
+  count = var.enable_vultr_ccm == true ? var.controller_count : 0
+
+  depends_on = [
+    null_resource.vultr_extensions
+  ]
+
+  triggers = {
+    api_key     = var.cluster_vultr_api_key
+    ccm_version = var.vultr_ccm_version
+  }
+
+  connection {
+    type = "ssh"
+    timeout = "10m"
+    user = "root"
+    host = vultr_instance.control_plane[count.index].main_ip
+    private_key = tls_private_key.root_tls_key.private_key_pem
+
   }
 
   provisioner "file" {
@@ -398,20 +502,6 @@ resource "null_resource" "vultr_extensions" {
         api-key: "${var.cluster_vultr_api_key}"
         region: "${var.region}"
       ---
-      apiVersion: v1
-      kind: Secret
-      metadata:
-        name: vultr-csi
-        namespace: kube-system
-      stringData:
-        api-key: "${var.cluster_vultr_api_key}"
-      ---
-    EOT
-    destination = "/var/lib/k0s/manifests/vultr/vultr-api-key.yaml"
-  }
-
-  provisioner "file" {
-    content     = <<-EOT
       apiVersion: v1
       kind: ServiceAccount
       metadata:
@@ -571,9 +661,41 @@ resource "null_resource" "vultr_extensions" {
     EOT
     destination = "/var/lib/k0s/manifests/vultr/vultr-ccm-${var.vultr_ccm_version}.yaml"
   }
+}
+
+resource "null_resource" "vultr_csi_extension" {
+  count = var.enable_vultr_csi ? var.controller_count : 0
+
+  depends_on = [
+    null_resource.vultr_extensions
+  ]
+
+  triggers = {
+    api_key     = var.cluster_vultr_api_key
+    csi_version = var.vultr_csi_version
+    csi_provisioner_version = var.csi_provisioner_version
+    csi_attacher_version = var.csi_attacher_version
+    csi_node_driver_registrar_version = var.csi_node_driver_registrar_version
+  }
+
+  connection {
+    type = "ssh"
+    timeout = "10m"
+    user = "root"
+    host = vultr_instance.control_plane[count.index].main_ip
+    private_key = tls_private_key.root_tls_key.private_key_pem
+  }
 
   provisioner "file" {
     content     = <<-EOT
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: vultr-csi
+        namespace: kube-system
+      stringData:
+        api-key: "${var.cluster_vultr_api_key}"
+      ---
       ####################
       ### Storage Classes
       ####################
@@ -628,7 +750,7 @@ resource "null_resource" "vultr_extensions" {
             serviceAccountName: csi-vultr-controller-sa
             containers:
               - name: csi-provisioner
-                image: quay.io/k8scsi/csi-provisioner:${local.csi_provisioner_version}
+                image: k8s.gcr.io/sig-storage/csi-provisioner:${var.csi_provisioner_version}
                 args:
                   - "--volume-name-prefix=pvc"
                   - "--volume-name-uuid-length=16"
@@ -643,7 +765,7 @@ resource "null_resource" "vultr_extensions" {
                   - name: socket-dir
                     mountPath: /var/lib/csi/sockets/pluginproxy/
               - name: csi-attacher
-                image: quay.io/k8scsi/csi-attacher:${local.csi_attacher_version}
+                image: k8s.gcr.io/sig-storage/csi-attacher:${var.csi_attacher_version}
                 args:
                   - "--v=5"
                   - "--csi-address=$(ADDRESS)"
@@ -793,7 +915,7 @@ resource "null_resource" "vultr_extensions" {
             hostNetwork: true
             containers:
               - name: driver-registrar
-                image: quay.io/k8scsi/csi-node-driver-registrar:${local.csi_node_driver_registrar_version}
+                image: k8s.gcr.io/sig-storage/csi-node-driver-registrar:${var.csi_node_driver_registrar_version}
                 args:
                   - "--v=5"
                   - "--csi-address=$(ADDRESS)"
@@ -903,7 +1025,7 @@ resource "null_resource" "vultr_extensions" {
           resources: [ "events" ]
           verbs: [ "get", "list", "watch", "create", "update", "patch" ]
     EOT
-    destination = "/var/lib/k0s/manifests/vultr/vultr-csi-latest.yaml"
+    destination = "/var/lib/k0s/manifests/vultr/vultr-csi-${var.vultr_csi_version}.yaml"
   }
 }
 

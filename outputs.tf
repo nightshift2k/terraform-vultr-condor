@@ -18,22 +18,22 @@ output "control_plane_address" {
   value = vultr_load_balancer.control_plane_ha.ipv4
 }
 
-output "control_plane_ha_fqdn" {
-  value = format("%s.%s", vultr_dns_record.control_plane_ha_dns_record[0].name, vultr_dns_record.control_plane_ha_dns_record[0].domain)
-}
+/* output "control_plane_ha_fqdn" { */
+/*   value = format("%s.%s", vultr_dns_record.control_plane_ha_dns_record[0].name, vultr_dns_record.control_plane_ha_dns_record[0].domain) */
+/* } */
 
 output "controller_fqdns" {
   value = [
     for r in vultr_dns_record.control_plane_dns_records :
       join(".", [ r.name, r.domain ])
-  ]  
+  ]
 }
 
 output "worker_fqdns" {
   value = [
     for r in vultr_dns_record.worker_dns_records :
       join(".", [ r.name, r.domain ])
-  ]  
+  ]
 }
 
 output "cluster_firewall_group_id" {

@@ -63,3 +63,12 @@ output "private_key_root_file" {
 output "public_key_root_file" {
   value = local_file.public_key_root.filename
 }
+
+output "kubeconfig" {
+  value = local.kubeconfig
+  depends_on = [ 
+    # first k0s must be successfully created
+    null_resource.create_kubeconfig
+  ]
+}
+

@@ -1029,7 +1029,11 @@ resource "null_resource" "vultr_csi_extension" {
   }
 }
 
-resource "null_resource" "kubeconfig" {
+locals {
+  kubeconfig_filename = "admin-${terraform.workspace}.conf"
+}
+
+resource "null_resource" "create_kubeconfig" {
   depends_on = [
     null_resource.k0s
   ]
@@ -1041,6 +1045,11 @@ resource "null_resource" "kubeconfig" {
   count = var.write_kubeconfig ? 1 : 0
 
   provisioner "local-exec" {
-    command = "k0sctl kubeconfig > admin-${terraform.workspace}.conf"
+    command = "k0sctl kubeconfig > ${local.kubeconfig_filename}"
   }
 }
+
+locals {
+  kubeconfig = "${abspath(path.root)}/${local.kubeconfig_filename}"
+}
+

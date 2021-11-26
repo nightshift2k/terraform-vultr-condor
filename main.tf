@@ -299,6 +299,17 @@ resource "vultr_firewall_rule" "ssh" {
   notes             = "Allow SSH to all cluster nodes globally."
 }
 
+resource "vultr_firewall_rule" "ftapi" {
+  count             = var.allow_ftapi ? 1 : 0
+  firewall_group_id = vultr_firewall_group.cluster.id
+  protocol          = "tcp"
+  ip_type           = "v4"
+  subnet            = "0.0.0.0"
+  subnet_size       = 0
+  port              = "30000"
+  notes             = "Allow freqtrade API to all cluster nodes globally."
+}
+
 resource "vultr_firewall_rule" "etcd" {
   count             = var.controller_count
   firewall_group_id = vultr_firewall_group.cluster.id

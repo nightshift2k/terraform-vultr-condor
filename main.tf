@@ -14,11 +14,11 @@ provider "vultr" {
 locals {
   enable_vultr_extensions           = (var.enable_vultr_ccm || var.enable_vultr_csi) && length(var.cluster_vultr_api_key) > 0
   cluster_name                      = var.cluster_append_random_id == true  ? "${var.cluster_name}-${random_id.cluster.hex}" : var.cluster_name
-  
+
   public_keys                       = concat([vultr_ssh_key.instance.id], vultr_ssh_key.extra_public_keys.*.id)
 
   k0sctl_install_flags_enable_ccm   = tostring(var.enable_vultr_ccm && (length(var.cluster_vultr_api_key) > 0))
-  k0sctl_install_flags_disable_comp = length(var.k0s_disable_components) > 0 ? join(", ", var.k0s_disable_components) : false 
+  k0sctl_install_flags_disable_comp = length(var.k0s_disable_components) > 0 ? join(", ", var.k0s_disable_components) : false
 
   k0sctl_controllers = [
     for host in vultr_instance.control_plane :
@@ -62,7 +62,7 @@ locals {
     metadata = {
       name = local.cluster_name
     }
-    spec = {      
+    spec = {
       hosts = concat(local.k0sctl_controllers, local.k0sctl_workers)
       k0s = {
         version = var.k0s_version
@@ -445,7 +445,7 @@ resource "null_resource" "k0s" {
   }
 }
 resource "null_resource" "vultr_extensions" {
-  count = local.enable_vultr_extensions == true ? var.controller_count : 0  
+  count = local.enable_vultr_extensions == true ? var.controller_count : 0
 
   triggers = {
     api_key     = var.cluster_vultr_api_key
@@ -1029,7 +1029,11 @@ resource "null_resource" "vultr_csi_extension" {
   }
 }
 
-resource "null_resource" "kubeconfig" {
+locals {
+  kubeconfig_filename = "admin-${terraform.workspace}.conf"
+}
+
+resource "null_resource" "create_kubeconfig" {
   depends_on = [
     null_resource.k0s
   ]
@@ -1041,6 +1045,10 @@ resource "null_resource" "kubeconfig" {
   count = var.write_kubeconfig ? 1 : 0
 
   provisioner "local-exec" {
-    command = "k0sctl kubeconfig > admin-${terraform.workspace}.conf"
+    command = "sleep 10; rm ${local.kubeconfig_filename}; k0sctl kubeconfig > ${local.kubeconfig_filename}"
   }
+}
+
+locals {
+  kubeconfig = "${abspath(path.root)}/${local.kubeconfig_filename}"
 }

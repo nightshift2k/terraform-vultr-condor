@@ -54,7 +54,10 @@ locals {
     }
   ]
 
-  k0s_api_sans = (var.cluster_create_external_dns_hosts && length(var.cluster_external_dns_domain) > 0) ? concat([ vultr_load_balancer.control_plane_ha.ipv4 ], [ format("%s.%s", vultr_dns_record.control_plane_ha_dns_record[0].name, vultr_dns_record.control_plane_ha_dns_record[0].domain) ]) : [ vultr_load_balancer.control_plane_ha.ipv4 ]
+  # only use loadbalancer ip if needed
+  ingress_ip = var.controller_count == 1  ? vultr_instance.control_plane[0].main_ip : vultr_load_balancer.control_plane_ha[0].ipv4
+
+  k0s_api_sans = (var.cluster_create_external_dns_hosts && length(var.cluster_external_dns_domain) > 0) ? concat([ vultr_load_balancer.control_plane_ha[0].ipv4 ], [ format("%s.%s", vultr_dns_record.control_plane_ha_dns_record[0].name, vultr_dns_record.control_plane_ha_dns_record[0].domain) ]) : [ local.ingress_ip ]
 
   k0sctl_conf = {
     apiVersion = "k0sctl.k0sproject.io/v1beta1"
@@ -85,9 +88,9 @@ locals {
             api = {
               port            = 6443
               k0sApiPort      = 9443
-              externalAddress = vultr_load_balancer.control_plane_ha.ipv4
-              address         = vultr_load_balancer.control_plane_ha.ipv4
-              # sans = [ vultr_load_balancer.control_plane_ha.ipv4 ]
+              externalAddress = local.ingress_ip
+              address         = local.ingress_ip
+              # sans = [ local.ingress_ip ]
               sans = local.k0s_api_sans
             }
             network = {
@@ -189,6 +192,8 @@ resource "vultr_private_network" "cluster" {
 }
 
 resource "vultr_load_balancer" "control_plane_ha" {
+  # disable if only one controller 
+  count = var.controller_count - 1
   region              = var.region
   label               = "HA Control Plane Load Balancer for k0s cluster ${random_id.cluster.hex}"
   balancing_algorithm = var.ha_lb_algorithm
@@ -426,7 +431,7 @@ resource "vultr_dns_record" "control_plane_ha_dns_record" {
     domain            = var.cluster_external_dns_domain
     name              = local.cluster_name
     type              = "A"
-    data              = vultr_load_balancer.control_plane_ha.ipv4
+    data              = vultr_load_balancer.control_plane_ha[0].ipv4
     ttl               = 120
 }
 

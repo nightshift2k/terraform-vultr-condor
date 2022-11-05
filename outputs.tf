@@ -11,11 +11,11 @@ output "cluster_network_id" {
 }
 
 output "control_plane_lb_id" {
-  value = vultr_load_balancer.control_plane_ha.id
+  value = vultr_load_balancer.control_plane_ha.*.id
 }
 
 output "control_plane_address" {
-  value = vultr_load_balancer.control_plane_ha.ipv4
+  value = local.ingress_ip
 }
 
 /* output "control_plane_ha_fqdn" { */

@@ -58,6 +58,7 @@ locals {
   ingress_ip = var.controller_count == 1  ? vultr_instance.control_plane[0].main_ip : vultr_load_balancer.control_plane_ha[0].ipv4
 
   k0s_api_sans = (var.cluster_create_external_dns_hosts && length(var.cluster_external_dns_domain) > 0) ? concat([ vultr_load_balancer.control_plane_ha[0].ipv4 ], [ format("%s.%s", vultr_dns_record.control_plane_ha_dns_record[0].name, vultr_dns_record.control_plane_ha_dns_record[0].domain) ]) : [ local.ingress_ip ]
+  /* k0s_depends_on = var.controller_count == 1  ? [ vultr_instance.control_plane, vultr_instance.worker, local_file.k0sctl_conf ] : [ vultr_load_balancer.control_plane_ha , vultr_instance.control_plane, vultr_instance.worker, local_file.k0sctl_conf ] */
 
   k0sctl_conf = {
     apiVersion = "k0sctl.k0sproject.io/v1beta1"
@@ -304,6 +305,36 @@ resource "vultr_firewall_rule" "ssh" {
   notes             = "Allow SSH to all cluster nodes globally."
 }
 
+resource "vultr_firewall_rule" "k8s" {
+  firewall_group_id = vultr_firewall_group.cluster.id
+  protocol          = "tcp"
+  ip_type           = "v4"
+  subnet            = "0.0.0.0"
+  subnet_size       = 0
+  port              = "6443"
+  notes             = "Allow k8s port, needed for instance created check of terraform"
+}
+
+resource "vultr_firewall_rule" "k9s_api" {
+  firewall_group_id = vultr_firewall_group.cluster.id
+  protocol          = "tcp"
+  ip_type           = "v4"
+  subnet            = "0.0.0.0"
+  subnet_size       = 0
+  port              = "9443"
+  notes             = "Allow k9s port, needed for instance created check of terraform"
+}
+
+resource "vultr_firewall_rule" "unknown_api" {
+  firewall_group_id = vultr_firewall_group.cluster.id
+  protocol          = "tcp"
+  ip_type           = "v4"
+  subnet            = "0.0.0.0"
+  subnet_size       = 0
+  port              = "8132"
+  notes             = "Allow unknown port, needed for instance created check of terraform?"
+}
+
 resource "vultr_firewall_rule" "ftapi" {
   count             = var.allow_ftapi ? 1 : 0
   firewall_group_id = vultr_firewall_group.cluster.id
@@ -443,13 +474,7 @@ resource "local_file" "k0sctl_conf" {
 }
 
 resource "null_resource" "k0s" {
-  depends_on = [
-    vultr_load_balancer.control_plane_ha,
-    vultr_instance.control_plane,
-    vultr_instance.worker,
-    local_file.k0sctl_conf
-  ]
-
+  depends_on = [ vultr_instance.control_plane, vultr_instance.worker, local_file.k0sctl_conf ]
   triggers = {
     controller_count = var.controller_count
     worker_count     = var.worker_count

@@ -280,6 +280,12 @@ variable "allow_ssh" {
   default     = true
 }
 
+variable "allow_ftapi" {
+  description = "Vultr Firewall Rule to allow freqtrade API globally to all cluster nodes."
+  type        = bool
+  default     = true
+}
+
 variable "helm_repositories" {
   description = "Helm repositories to add to the k0s deployment"
   type    = list(map(any))

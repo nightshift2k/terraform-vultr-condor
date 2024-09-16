@@ -14,11 +14,11 @@ provider "vultr" {
 locals {
   enable_vultr_extensions           = (var.enable_vultr_ccm || var.enable_vultr_csi) && length(var.cluster_vultr_api_key) > 0
   cluster_name                      = var.cluster_append_random_id == true  ? "${var.cluster_name}-${random_id.cluster.hex}" : var.cluster_name
-  
+
   public_keys                       = concat([vultr_ssh_key.instance.id], vultr_ssh_key.extra_public_keys.*.id)
 
   k0sctl_install_flags_enable_ccm   = tostring(var.enable_vultr_ccm && (length(var.cluster_vultr_api_key) > 0))
-  k0sctl_install_flags_disable_comp = length(var.k0s_disable_components) > 0 ? join(", ", var.k0s_disable_components) : false 
+  k0sctl_install_flags_disable_comp = length(var.k0s_disable_components) > 0 ? join(", ", var.k0s_disable_components) : false
 
   k0sctl_controllers = [
     for host in vultr_instance.control_plane :
@@ -54,7 +54,11 @@ locals {
     }
   ]
 
-  k0s_api_sans = (var.cluster_create_external_dns_hosts && length(var.cluster_external_dns_domain) > 0) ? concat([ vultr_load_balancer.control_plane_ha.ipv4 ], [ format("%s.%s", vultr_dns_record.control_plane_ha_dns_record[0].name, vultr_dns_record.control_plane_ha_dns_record[0].domain) ]) : [ vultr_load_balancer.control_plane_ha.ipv4 ]
+  # only use loadbalancer ip if needed
+  ingress_ip = var.controller_count == 1  ? vultr_instance.control_plane[0].main_ip : vultr_load_balancer.control_plane_ha[0].ipv4
+
+  k0s_api_sans = (var.cluster_create_external_dns_hosts && length(var.cluster_external_dns_domain) > 0) ? concat([ vultr_load_balancer.control_plane_ha[0].ipv4 ], [ format("%s.%s", vultr_dns_record.control_plane_ha_dns_record[0].name, vultr_dns_record.control_plane_ha_dns_record[0].domain) ]) : [ local.ingress_ip ]
+  /* k0s_depends_on = var.controller_count == 1  ? [ vultr_instance.control_plane, vultr_instance.worker, local_file.k0sctl_conf ] : [ vultr_load_balancer.control_plane_ha , vultr_instance.control_plane, vultr_instance.worker, local_file.k0sctl_conf ] */
 
   k0sctl_conf = {
     apiVersion = "k0sctl.k0sproject.io/v1beta1"
@@ -62,7 +66,7 @@ locals {
     metadata = {
       name = local.cluster_name
     }
-    spec = {      
+    spec = {
       hosts = concat(local.k0sctl_controllers, local.k0sctl_workers)
       k0s = {
         version = var.k0s_version
@@ -85,9 +89,9 @@ locals {
             api = {
               port            = 6443
               k0sApiPort      = 9443
-              externalAddress = vultr_load_balancer.control_plane_ha.ipv4
-              address         = vultr_load_balancer.control_plane_ha.ipv4
-              # sans = [ vultr_load_balancer.control_plane_ha.ipv4 ]
+              externalAddress = local.ingress_ip
+              address         = local.ingress_ip
+              # sans = [ local.ingress_ip ]
               sans = local.k0s_api_sans
             }
             network = {
@@ -189,6 +193,8 @@ resource "vultr_private_network" "cluster" {
 }
 
 resource "vultr_load_balancer" "control_plane_ha" {
+  # disable if only one controller 
+  count = var.controller_count - 1
   region              = var.region
   label               = "HA Control Plane Load Balancer for k0s cluster ${random_id.cluster.hex}"
   balancing_algorithm = var.ha_lb_algorithm
@@ -297,6 +303,47 @@ resource "vultr_firewall_rule" "ssh" {
   subnet_size       = 0
   port              = "22"
   notes             = "Allow SSH to all cluster nodes globally."
+}
+
+resource "vultr_firewall_rule" "k8s" {
+  firewall_group_id = vultr_firewall_group.cluster.id
+  protocol          = "tcp"
+  ip_type           = "v4"
+  subnet            = "0.0.0.0"
+  subnet_size       = 0
+  port              = "6443"
+  notes             = "Allow k8s port, needed for instance created check of terraform"
+}
+
+resource "vultr_firewall_rule" "k9s_api" {
+  firewall_group_id = vultr_firewall_group.cluster.id
+  protocol          = "tcp"
+  ip_type           = "v4"
+  subnet            = "0.0.0.0"
+  subnet_size       = 0
+  port              = "9443"
+  notes             = "Allow k9s port, needed for instance created check of terraform"
+}
+
+resource "vultr_firewall_rule" "unknown_api" {
+  firewall_group_id = vultr_firewall_group.cluster.id
+  protocol          = "tcp"
+  ip_type           = "v4"
+  subnet            = "0.0.0.0"
+  subnet_size       = 0
+  port              = "8132"
+  notes             = "Allow unknown port, needed for instance created check of terraform?"
+}
+
+resource "vultr_firewall_rule" "ftapi" {
+  count             = var.allow_ftapi ? 1 : 0
+  firewall_group_id = vultr_firewall_group.cluster.id
+  protocol          = "tcp"
+  ip_type           = "v4"
+  subnet            = "0.0.0.0"
+  subnet_size       = 0
+  port              = "30000"
+  notes             = "Allow freqtrade API to all cluster nodes globally."
 }
 
 resource "vultr_firewall_rule" "etcd" {
@@ -415,7 +462,7 @@ resource "vultr_dns_record" "control_plane_ha_dns_record" {
     domain            = var.cluster_external_dns_domain
     name              = local.cluster_name
     type              = "A"
-    data              = vultr_load_balancer.control_plane_ha.ipv4
+    data              = vultr_load_balancer.control_plane_ha[0].ipv4
     ttl               = 120
 }
 
@@ -427,13 +474,7 @@ resource "local_file" "k0sctl_conf" {
 }
 
 resource "null_resource" "k0s" {
-  depends_on = [
-    vultr_load_balancer.control_plane_ha,
-    vultr_instance.control_plane,
-    vultr_instance.worker,
-    local_file.k0sctl_conf
-  ]
-
+  depends_on = [ vultr_instance.control_plane, vultr_instance.worker, local_file.k0sctl_conf ]
   triggers = {
     controller_count = var.controller_count
     worker_count     = var.worker_count
@@ -445,7 +486,7 @@ resource "null_resource" "k0s" {
   }
 }
 resource "null_resource" "vultr_extensions" {
-  count = local.enable_vultr_extensions == true ? var.controller_count : 0  
+  count = local.enable_vultr_extensions == true ? var.controller_count : 0
 
   triggers = {
     api_key     = var.cluster_vultr_api_key
@@ -1029,7 +1070,11 @@ resource "null_resource" "vultr_csi_extension" {
   }
 }
 
-resource "null_resource" "kubeconfig" {
+locals {
+  kubeconfig_filename = "admin-${terraform.workspace}.conf"
+}
+
+resource "null_resource" "create_kubeconfig" {
   depends_on = [
     null_resource.k0s
   ]
@@ -1041,6 +1086,10 @@ resource "null_resource" "kubeconfig" {
   count = var.write_kubeconfig ? 1 : 0
 
   provisioner "local-exec" {
-    command = "k0sctl kubeconfig > admin-${terraform.workspace}.conf"
+    command = "sleep 10; rm ${local.kubeconfig_filename}; k0sctl kubeconfig > ${local.kubeconfig_filename}"
   }
+}
+
+locals {
+  kubeconfig = "${abspath(path.root)}/${local.kubeconfig_filename}"
 }

@@ -11,29 +11,29 @@ output "cluster_network_id" {
 }
 
 output "control_plane_lb_id" {
-  value = vultr_load_balancer.control_plane_ha.id
+  value = vultr_load_balancer.control_plane_ha.*.id
 }
 
 output "control_plane_address" {
-  value = vultr_load_balancer.control_plane_ha.ipv4
+  value = local.ingress_ip
 }
 
-output "control_plane_ha_fqdn" {
-  value = format("%s.%s", vultr_dns_record.control_plane_ha_dns_record[0].name, vultr_dns_record.control_plane_ha_dns_record[0].domain)
-}
+/* output "control_plane_ha_fqdn" { */
+/*   value = format("%s.%s", vultr_dns_record.control_plane_ha_dns_record[0].name, vultr_dns_record.control_plane_ha_dns_record[0].domain) */
+/* } */
 
 output "controller_fqdns" {
   value = [
     for r in vultr_dns_record.control_plane_dns_records :
       join(".", [ r.name, r.domain ])
-  ]  
+  ]
 }
 
 output "worker_fqdns" {
   value = [
     for r in vultr_dns_record.worker_dns_records :
       join(".", [ r.name, r.domain ])
-  ]  
+  ]
 }
 
 output "cluster_firewall_group_id" {
@@ -63,3 +63,12 @@ output "private_key_root_file" {
 output "public_key_root_file" {
   value = local_file.public_key_root.filename
 }
+
+output "kubeconfig" {
+  value = local.kubeconfig
+  depends_on = [ 
+    # first k0s must be successfully created
+    null_resource.create_kubeconfig
+  ]
+}
+
